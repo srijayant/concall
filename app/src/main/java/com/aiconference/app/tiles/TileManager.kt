@@ -81,6 +81,12 @@ class TileManager(private val appContext: Context) : TileWebViewFactory.MicArbit
         webViews[tile.id]?.reload()
     }
 
+    fun goBack(tile: Tile) {
+        val wv = webViews[tile.id] ?: return
+        if (wv.canGoBack()) wv.goBack() else tile.service?.url?.let { wv.loadUrl(it) }
+        tile.loginBlocked = false
+    }
+
     /** Select which tile the user is talking to (null = mute everyone's mic). */
     fun setActiveMicTile(tileId: String?) {
         activeMicTileId = tileId

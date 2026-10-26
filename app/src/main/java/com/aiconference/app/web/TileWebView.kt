@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.MutableContextWrapper
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Message
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -17,6 +18,8 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.core.content.ContextCompat
+import androidx.webkit.UserAgentMetadata
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.aiconference.app.tiles.Tile
@@ -24,31 +27,28 @@ import com.aiconference.app.tiles.Tile
 /**
  * Creates and configures the WebView backing one AI tile.
  *
- * Navigation never leaves the tile: OxygenOS/Chrome "open in app" banners,
- * intent:// deep links, and target=_blank popups are all trapped here so
- * ChatGPT/Gemini/Claude/Grok stay in their conference blocks.
+ * Navigation never leaves the tile. The WebView is disguised as the device's
+ * real Chrome (UA + client hints) so email/password login works. Google's
+ * "Sign in with Google" button is still blocked by Google policy in any
+ * WebView — we detect that page and the UI offers Back + email instead.
  */
 object TileWebViewFactory {
 
-    /** Decides, at grant time, whether a tile may capture the microphone. */
     interface MicArbiter {
         fun mayCaptureAudio(tileId: String): Boolean
         fun onPageReady(tileId: String)
     }
 
-    /**
-     * Desktop Chrome UA. Mobile UAs make these sites push an "Open in app"
-     * interstitial that launches the system browser (and then 404s). Desktop
-     * UA gets the real web app, which is what we want inside a tile.
-     */
-    private const val DESKTOP_UA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-
     const val INIT_SCRIPT = """
         (function() {
           if (window.__aiconfInit) return;
           window.__aiconfInit = true;
+
+          try {
+            Object.defineProperty(navigator, 'webdriver', { get: function() { return undefined; } });
+          } catch (e) {}
+          window.chrome = window.chrome || { runtime: {}, app: {}, csi: function() {}, loadTimes: function() {} };
+
           window.__aiconfStreams = [];
           window.__aiconfOutputOn = true;
           if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
@@ -81,7 +81,6 @@ object TileWebViewFactory {
             if (!window.__aiconfOutputOn) applyOutput(document);
           }).observe(document.documentElement, { childList: true, subtree: true });
 
-          // Keep every link and window.open inside this tile.
           window.open = function(url) {
             if (url) window.location.href = url;
             return window;
@@ -115,7 +114,6 @@ object TileWebViewFactory {
             javaScriptEnabled = true
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
-            // Same-tile only: a true "new window" is what OxygenOS turns into Chrome.
             setSupportMultipleWindows(false)
             javaScriptCanOpenWindowsAutomatically = false
             loadWithOverviewMode = true
@@ -123,8 +121,8 @@ object TileWebViewFactory {
             builtInZoomControls = true
             displayZoomControls = false
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            userAgentString = DESKTOP_UA
         }
+        applyChromeIdentity(webView)
 
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
@@ -138,13 +136,14 @@ object TileWebViewFactory {
         webView.webViewClient = object : WebViewClient() {
             @Deprecated("Deprecated in Java")
             override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean =
-                intercept(view, Uri.parse(url))
+                intercept(view, Uri.parse(url), tile)
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                intercept(view, request.url)
+                intercept(view, request.url, tile)
 
             override fun onPageFinished(view: WebView, url: String?) {
                 view.evaluateJavascript(INIT_SCRIPT, null)
+                tile.loginBlocked = isBlockedLoginUrl(url)
                 arbiter.onPageReady(tile.id)
             }
         }
@@ -167,7 +166,6 @@ object TileWebViewFactory {
                 if (granted.isEmpty()) request.deny() else request.grant(granted.toTypedArray())
             }
 
-            // Belt and suspenders if a page still tries to spawn a window.
             override fun onCreateWindow(
                 view: WebView,
                 isDialog: Boolean,
@@ -181,7 +179,7 @@ object TileWebViewFactory {
                         v: WebView,
                         request: WebResourceRequest,
                     ): Boolean {
-                        intercept(view, request.url)
+                        intercept(view, request.url, tile)
                         return true
                     }
                 }
@@ -191,7 +189,6 @@ object TileWebViewFactory {
             }
         }
 
-        // Don't let a download prompt bounce into Chrome either.
         webView.setDownloadListener { _, _, _, _, _ -> }
 
         webView.loadUrl(service.url)
@@ -199,14 +196,62 @@ object TileWebViewFactory {
     }
 
     /**
-     * @return true if the WebView should NOT do its default thing (which on
-     * OxygenOS is often "open Chrome"). http(s) stays in-tile by returning
-     * false; everything else is swallowed or rewritten to https.
+     * Look like the phone's real Chrome, not a WebView and not a fake
+     * Windows desktop. Google's "browser may not be secure" triggers hard
+     * on UA mismatch (our previous desktop UA) and on the "; wv" token.
      */
-    private fun intercept(view: WebView, uri: Uri): Boolean {
+    private fun applyChromeIdentity(webView: WebView) {
+        val defaultUa = WebSettings.getDefaultUserAgent(webView.context)
+        val ua = defaultUa
+            .replace("; wv", "")
+            .replace(Regex("Version/\\d+\\.\\d+ "), "")
+        webView.settings.userAgentString = ua
+
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+            runCatching {
+                WebSettingsCompat.setRequestedWithHeaderOriginAllowList(webView.settings, emptySet())
+            }
+        }
+
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
+            val chrome = Regex("Chrome/([\\d.]+)").find(ua)?.groupValues?.get(1) ?: "131.0.0.0"
+            fun brand(name: String, full: String) = UserAgentMetadata.BrandVersion.Builder()
+                .setBrand(name)
+                .setMajorVersion(full.substringBefore('.'))
+                .setFullVersion(full)
+                .build()
+            runCatching {
+                WebSettingsCompat.setUserAgentMetadata(
+                    webView.settings,
+                    UserAgentMetadata.Builder()
+                        .setBrandVersionList(
+                            listOf(
+                                brand("Google Chrome", chrome),
+                                brand("Chromium", chrome),
+                                brand("Not_A Brand", "8.0.0.0"),
+                            )
+                        )
+                        .setFullVersion(chrome)
+                        .setPlatform("Android")
+                        .setPlatformVersion(Build.VERSION.RELEASE ?: "14")
+                        .setArchitecture("arm")
+                        .setModel(Build.MODEL.orEmpty())
+                        .setMobile(true)
+                        .setBitness(64)
+                        .setWow64(false)
+                        .build(),
+                )
+            }
+        }
+    }
+
+    private fun intercept(view: WebView, uri: Uri, tile: Tile): Boolean {
         val scheme = uri.scheme?.lowercase() ?: return true
         when (scheme) {
-            "http", "https" -> return false
+            "http", "https" -> {
+                tile.loginBlocked = isBlockedLoginUrl(uri.toString())
+                return false
+            }
             "about", "javascript", "blob", "data" -> return false
             "intent" -> {
                 rewriteIntent(uri.toString())?.let { view.loadUrl(it) }
@@ -216,8 +261,19 @@ object TileWebViewFactory {
                 rewriteAndroidApp(uri)?.let { view.loadUrl(it) }
                 return true
             }
-            else -> return true // market, chatgpt, googlechrome, etc. — stay in tile
+            else -> return true
         }
+    }
+
+    fun isBlockedLoginUrl(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val host = Uri.parse(url).host?.lowercase() ?: return false
+        return host == "accounts.google.com" ||
+            host == "accounts.youtube.com" ||
+            host.endsWith(".google.com") && url.contains("signin", ignoreCase = true) ||
+            host == "appleid.apple.com" ||
+            url.contains("disallowed_useragent", ignoreCase = true) ||
+            url.contains("signin/rejected", ignoreCase = true)
     }
 
     private fun rewriteIntent(url: String): String? = runCatching {
@@ -233,7 +289,6 @@ object TileWebViewFactory {
     }.getOrNull()
 
     private fun rewriteAndroidApp(uri: Uri): String? {
-        // android-app://package/https/host/path
         val segs = uri.pathSegments
         if (segs.size >= 2 && segs[0] in listOf("http", "https")) {
             return "${segs[0]}://${segs.drop(1).joinToString("/")}"

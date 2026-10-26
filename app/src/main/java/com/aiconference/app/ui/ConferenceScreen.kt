@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Close
@@ -30,6 +31,8 @@ import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -184,7 +187,19 @@ private fun TileCard(
     ) {
         when {
             tile.poppedOut -> PoppedOutPlaceholder(tile) { actions.bringBackTile(tile) }
-            tile.kind == TileKind.WEB -> WebTile(tile, manager)
+            tile.kind == TileKind.WEB -> {
+                WebTile(tile, manager)
+                if (tile.loginBlocked) {
+                    LoginBlockedOverlay(
+                        tile = tile,
+                        onBack = { manager.goBack(tile) },
+                        onNative = {
+                            tile.service?.let { actions.launchNativeApp(it) }
+                        },
+                        nativeAvailable = tile.service?.let { actions.isNativeAppInstalled(it) } == true,
+                    )
+                }
+            }
             else -> CameraTile(
                 tile = tile,
                 hasCameraPermission = hasCameraPermission,
@@ -260,6 +275,50 @@ private fun RowScope.TileAction(
 ) {
     IconButton(onClick = onClick, modifier = Modifier.size(32.dp)) {
         Icon(icon, description, tint = tint, modifier = Modifier.size(16.dp))
+    }
+}
+
+@Composable
+private fun LoginBlockedOverlay(
+    tile: Tile,
+    onBack: () -> Unit,
+    onNative: () -> Unit,
+    nativeAvailable: Boolean,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xE6101014))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            "Google sign-in is blocked in tiles",
+            color = Color.White,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "Google refuses “Sign in with Google” inside any in-app browser. Use email/password on the ${tile.label} page instead.",
+            color = Color(0xFFC8C8D0),
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        Button(
+            onClick = onBack,
+            modifier = Modifier.padding(top = 14.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A32)),
+        ) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Back to email login")
+        }
+        if (nativeAvailable) {
+            TextButton(onClick = onNative) {
+                Text("Open ${tile.label} app instead")
+            }
+        }
     }
 }
 

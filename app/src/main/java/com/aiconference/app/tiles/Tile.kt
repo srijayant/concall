@@ -25,5 +25,8 @@ class Tile(
     /** Camera tile only: which lens the self-view uses. */
     var frontCamera by mutableStateOf(true)
 
+    /** True when Google/Apple blocked sign-in inside the WebView. */
+    var loginBlocked by mutableStateOf(false)
+
     val label: String get() = service?.label ?: "You"
 }
