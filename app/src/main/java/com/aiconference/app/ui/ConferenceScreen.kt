@@ -316,7 +316,7 @@ private fun LoginBlockedOverlay(
         }
         if (nativeAvailable) {
             TextButton(onClick = onNative) {
-                Text("Open ${tile.label} app instead")
+                Text("Open ${tile.label} app (separate)")
             }
         }
     }
@@ -416,6 +416,12 @@ private fun AddParticipantSheet(
                 "Add participant (${manager.tiles.size}/${TileManager.MAX_TILES})",
                 color = Color.White,
                 style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            Text(
+                "“Add tile” keeps it in this grid. “Open app” launches ChatGPT/Gemini/etc. separately — this phone cannot embed another app in a tile.",
+                color = Color(0xFF9A9AA5),
+                style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(bottom = 8.dp),
             )
             AiService.entries.forEach { service ->
@@ -432,7 +438,7 @@ private fun AddParticipantSheet(
                     ) { Text("Add tile") }
                     if (actions.isNativeAppInstalled(service)) {
                         TextButton(onClick = { actions.launchNativeApp(service); onDismiss() }) {
-                            Text("Native window")
+                            Text("Open app")
                         }
                     }
                 }
