@@ -3,13 +3,17 @@ package com.aiconference.app.web
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.MutableContextWrapper
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Message
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.core.content.ContextCompat
@@ -20,23 +24,26 @@ import com.aiconference.app.tiles.Tile
 /**
  * Creates and configures the WebView backing one AI tile.
  *
- * Key behaviors:
- *  - Mic/camera reach the page through [WebChromeClient.onPermissionRequest].
- *    Audio capture is only granted to the tile currently selected as the
- *    "talking to" target (see [MicArbiter]), so AI voice modes don't all
- *    listen at once and feed back into each other.
- *  - A document-start script wraps `getUserMedia` so we can mute/unmute the
- *    page's mic tracks and media output with JS, without reloading.
- *  - The default WebView UA token ("; wv") is removed so Google sign-in
- *    doesn't reject the view with disallowed_useragent.
+ * Navigation never leaves the tile: OxygenOS/Chrome "open in app" banners,
+ * intent:// deep links, and target=_blank popups are all trapped here so
+ * ChatGPT/Gemini/Claude/Grok stay in their conference blocks.
  */
 object TileWebViewFactory {
 
-    /** Decides, at grant time, whether a tile may open the microphone. */
+    /** Decides, at grant time, whether a tile may capture the microphone. */
     interface MicArbiter {
         fun mayCaptureAudio(tileId: String): Boolean
         fun onPageReady(tileId: String)
     }
+
+    /**
+     * Desktop Chrome UA. Mobile UAs make these sites push an "Open in app"
+     * interstitial that launches the system browser (and then 404s). Desktop
+     * UA gets the real web app, which is what we want inside a tile.
+     */
+    private const val DESKTOP_UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
     const val INIT_SCRIPT = """
         (function() {
@@ -73,14 +80,22 @@ object TileWebViewFactory {
           new MutationObserver(function() {
             if (!window.__aiconfOutputOn) applyOutput(document);
           }).observe(document.documentElement, { childList: true, subtree: true });
+
+          // Keep every link and window.open inside this tile.
+          window.open = function(url) {
+            if (url) window.location.href = url;
+            return window;
+          };
+          document.addEventListener('click', function(e) {
+            var a = e.target && e.target.closest ? e.target.closest('a') : null;
+            if (a && a.target === '_blank') a.target = '_self';
+          }, true);
         })();
     """
 
     @SuppressLint("SetJavaScriptEnabled")
     fun create(appContext: Context, tile: Tile, arbiter: MicArbiter): WebView {
         val service = requireNotNull(tile.service) { "Only web tiles own a WebView" }
-        // MutableContextWrapper lets the same WebView be re-hosted by the main
-        // grid activity or the pop-out activity without leaking either.
         val webView = WebView(MutableContextWrapper(appContext))
 
         webView.layoutParams = ViewGroup.LayoutParams(
@@ -88,8 +103,6 @@ object TileWebViewFactory {
             ViewGroup.LayoutParams.MATCH_PARENT,
         )
 
-        // Give each tile its own cookie/storage profile where supported, so
-        // e.g. two Google accounts or parallel sessions don't collide.
         if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
             runCatching {
                 androidx.webkit.ProfileStore.getInstance()
@@ -102,16 +115,18 @@ object TileWebViewFactory {
             javaScriptEnabled = true
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
-            setSupportMultipleWindows(true)
-            javaScriptCanOpenWindowsAutomatically = true
+            // Same-tile only: a true "new window" is what OxygenOS turns into Chrome.
+            setSupportMultipleWindows(false)
+            javaScriptCanOpenWindowsAutomatically = false
             loadWithOverviewMode = true
             useWideViewPort = true
-            // Strip the WebView markers; Google sign-in blocks UAs containing "; wv".
-            userAgentString = userAgentString
-                .replace("; wv", "")
-                .replace(Regex("Version/\\d+\\.\\d+ "), "")
+            builtInZoomControls = true
+            displayZoomControls = false
+            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            userAgentString = DESKTOP_UA
         }
 
+        CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
 
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
@@ -121,14 +136,14 @@ object TileWebViewFactory {
         }
 
         webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(
-                view: WebView,
-                request: WebResourceRequest,
-            ): Boolean = false // keep navigation (incl. OAuth redirects) inside the tile
+            @Deprecated("Deprecated in Java")
+            override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean =
+                intercept(view, Uri.parse(url))
+
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+                intercept(view, request.url)
 
             override fun onPageFinished(view: WebView, url: String?) {
-                // Fallback injection when DOCUMENT_START_SCRIPT is unavailable,
-                // and re-assert mute state after navigations.
                 view.evaluateJavascript(INIT_SCRIPT, null)
                 arbiter.onPageReady(tile.id)
             }
@@ -152,12 +167,12 @@ object TileWebViewFactory {
                 if (granted.isEmpty()) request.deny() else request.grant(granted.toTypedArray())
             }
 
-            // Google sign-in opens a popup window; route it back into this tile.
+            // Belt and suspenders if a page still tries to spawn a window.
             override fun onCreateWindow(
                 view: WebView,
                 isDialog: Boolean,
                 isUserGesture: Boolean,
-                resultMsg: android.os.Message,
+                resultMsg: Message,
             ): Boolean {
                 val transport = resultMsg.obj as WebView.WebViewTransport
                 val temp = WebView(view.context)
@@ -166,8 +181,7 @@ object TileWebViewFactory {
                         v: WebView,
                         request: WebResourceRequest,
                     ): Boolean {
-                        view.loadUrl(request.url.toString())
-                        temp.destroy()
+                        intercept(view, request.url)
                         return true
                     }
                 }
@@ -177,8 +191,54 @@ object TileWebViewFactory {
             }
         }
 
+        // Don't let a download prompt bounce into Chrome either.
+        webView.setDownloadListener { _, _, _, _, _ -> }
+
         webView.loadUrl(service.url)
         return webView
+    }
+
+    /**
+     * @return true if the WebView should NOT do its default thing (which on
+     * OxygenOS is often "open Chrome"). http(s) stays in-tile by returning
+     * false; everything else is swallowed or rewritten to https.
+     */
+    private fun intercept(view: WebView, uri: Uri): Boolean {
+        val scheme = uri.scheme?.lowercase() ?: return true
+        when (scheme) {
+            "http", "https" -> return false
+            "about", "javascript", "blob", "data" -> return false
+            "intent" -> {
+                rewriteIntent(uri.toString())?.let { view.loadUrl(it) }
+                return true
+            }
+            "android-app" -> {
+                rewriteAndroidApp(uri)?.let { view.loadUrl(it) }
+                return true
+            }
+            else -> return true // market, chatgpt, googlechrome, etc. — stay in tile
+        }
+    }
+
+    private fun rewriteIntent(url: String): String? = runCatching {
+        val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+        intent.getStringExtra("browser_fallback_url")
+            ?: intent.getStringExtra("S.browser_fallback_url")
+            ?: intent.data?.let { data ->
+                when (data.scheme?.lowercase()) {
+                    "http", "https" -> data.toString()
+                    else -> data.buildUpon().scheme("https").build().toString()
+                }
+            }
+    }.getOrNull()
+
+    private fun rewriteAndroidApp(uri: Uri): String? {
+        // android-app://package/https/host/path
+        val segs = uri.pathSegments
+        if (segs.size >= 2 && segs[0] in listOf("http", "https")) {
+            return "${segs[0]}://${segs.drop(1).joinToString("/")}"
+        }
+        return null
     }
 
     fun setMicEnabled(webView: WebView, enabled: Boolean) {
