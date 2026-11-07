@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.app.AlertDialog
+import android.webkit.CookieManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -21,6 +22,7 @@ import com.aiconference.app.popout.FreeformLauncher
 import com.aiconference.app.popout.PopOutActivity
 import com.aiconference.app.service.CallGridService
 import com.aiconference.app.tiles.AiService
+import com.aiconference.app.web.ChromeSignIn
 
 class MainActivity : ComponentActivity() {
 
@@ -47,6 +49,8 @@ class MainActivity : ComponentActivity() {
             popOutTile = { tile -> FreeformLauncher.popOutTile(this, tile) },
             bringBackTile = { tile -> PopOutActivity.closeFor(tile.id) },
             launchNativeApp = { service -> promptAndLaunchNative(service) },
+            launchNativeNow = { service -> launchNativeNow(service) },
+            openInChrome = { url -> ChromeSignIn.open(this, url) },
             isNativeAppInstalled = { service -> FreeformLauncher.isNativeAppInstalled(this, service) },
             toggleSpeaker = { audio.toggleSpeaker() },
             requestPermissions = { requestPermissions() },
@@ -62,6 +66,11 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onPause() {
+        runCatching { CookieManager.getInstance().flush() }
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -112,6 +121,16 @@ class MainActivity : ComponentActivity() {
             }
             .setNegativeButton("Cancel", null)
             .show()
+        return true
+    }
+
+    private fun launchNativeNow(service: AiService): Boolean {
+        if (!FreeformLauncher.launchNativeApp(this, service)) return false
+        Toast.makeText(
+            this,
+            "If it’s full screen: Recents → long-press → Floating window",
+            Toast.LENGTH_LONG,
+        ).show()
         return true
     }
 

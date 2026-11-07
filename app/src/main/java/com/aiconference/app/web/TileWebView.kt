@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Message
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -122,6 +123,9 @@ object TileWebViewFactory {
             displayZoomControls = false
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            webView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_YES
+        }
         applyChromeIdentity(webView)
 
         CookieManager.getInstance().setAcceptCookie(true)
@@ -138,12 +142,14 @@ object TileWebViewFactory {
             override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean =
                 intercept(view, Uri.parse(url), tile)
 
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                intercept(view, request.url, tile)
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                if (!request.isForMainFrame) return false
+                return intercept(view, request.url, tile)
+            }
 
             override fun onPageFinished(view: WebView, url: String?) {
                 view.evaluateJavascript(INIT_SCRIPT, null)
-                tile.loginBlocked = isBlockedLoginUrl(url)
+                applyLoginState(view, tile, url)
                 arbiter.onPageReady(tile.id)
             }
         }
@@ -191,7 +197,8 @@ object TileWebViewFactory {
 
         webView.setDownloadListener { _, _, _, _, _ -> }
 
-        webView.loadUrl(service.url)
+        // Email login first. A saved session redirects straight into the app.
+        webView.loadUrl(service.emailLoginUrl ?: service.url)
         return webView
     }
 
@@ -245,11 +252,40 @@ object TileWebViewFactory {
         }
     }
 
+    private fun applyLoginState(view: WebView, tile: Tile, url: String?) {
+        val service = tile.service
+        if (service == null || url.isNullOrBlank()) return
+        val blocked = LoginUrls.isBlocked(url)
+        tile.loginBlocked = blocked
+        tile.onLoginPage = LoginUrls.isLoginPage(service, url)
+        if (tile.signingIn && (tile.onLoginPage || blocked)) {
+            tile.sawLoginDuringSignIn = true
+        }
+        if (LoginUrls.shouldReturnToGrid(tile.signingIn, tile.sawLoginDuringSignIn, service, url)) {
+            // Detach the WebView only after this callback returns.
+            view.post {
+                if (!tile.signingIn) return@post
+                tile.signingIn = false
+                tile.sawLoginDuringSignIn = false
+                tile.loginBlocked = false
+                flushCookies()
+            }
+        }
+    }
+
     private fun intercept(view: WebView, uri: Uri, tile: Tile): Boolean {
         val scheme = uri.scheme?.lowercase() ?: return true
         when (scheme) {
             "http", "https" -> {
-                tile.loginBlocked = isBlockedLoginUrl(uri.toString())
+                val url = uri.toString()
+                if (LoginUrls.isBlocked(url)) {
+                    // Leave the email form in place. Google's page cannot succeed here.
+                    tile.loginBlocked = true
+                    if (tile.signingIn) tile.sawLoginDuringSignIn = true
+                    return true
+                }
+                tile.loginBlocked = false
+                tile.service?.let { tile.onLoginPage = LoginUrls.isLoginPage(it, url) }
                 return false
             }
             "about", "javascript", "blob", "data" -> return false
@@ -265,15 +301,10 @@ object TileWebViewFactory {
         }
     }
 
-    fun isBlockedLoginUrl(url: String?): Boolean {
-        if (url.isNullOrBlank()) return false
-        val host = Uri.parse(url).host?.lowercase() ?: return false
-        return host == "accounts.google.com" ||
-            host == "accounts.youtube.com" ||
-            host.endsWith(".google.com") && url.contains("signin", ignoreCase = true) ||
-            host == "appleid.apple.com" ||
-            url.contains("disallowed_useragent", ignoreCase = true) ||
-            url.contains("signin/rejected", ignoreCase = true)
+    fun isBlockedLoginUrl(url: String?): Boolean = url?.let { LoginUrls.isBlocked(it) } == true
+
+    fun flushCookies() {
+        runCatching { CookieManager.getInstance().flush() }
     }
 
     private fun rewriteIntent(url: String): String? = runCatching {

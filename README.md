@@ -21,13 +21,14 @@ Requires JDK 17+ and the Android SDK (platform 35).
 ## On-device setup (OnePlus / OxygenOS)
 
 1. Grant camera, microphone, and notification permissions on first launch.
-2. Sign in to each AI service inside its tile (sessions persist).
+2. Sign in once per service. On a ChatGPT, Claude, or Grok tile, tap **Sign in** — the page opens full screen, so a password manager can fill the email login and a copied email link can be pasted back in. Gemini only accepts Google, which refuses in-app browsers: tap **Open in Chrome** (the Google account already in Chrome) or **Open Gemini app**. Sessions stay on the phone.
 3. Optional, for multiple simultaneous pop-out windows: enable Developer options → *Enable freeform windows*, or run `adb shell settings put global enable_freeform_support 1` and reboot. Without it, pop-out works as a single-window focus mode.
 4. Recommended: exclude the app from battery optimization so OxygenOS doesn't kill the session in the background (a foreground service with camera/mic/media types is used, but OxygenOS is aggressive).
 
 ## Known limitations
 
-- **Google sign-in in the Gemini tile** may be blocked in WebViews; the app strips the WebView user-agent marker which usually fixes it, but if sign-in still fails, use the "Native window" option for Gemini.
+- **Gemini** cannot complete Google sign-in inside a tile. Google blocks that page in every in-app browser. Open in Chrome, or open the Gemini app.
+- **ChatGPT, Claude, and Grok** sign in with email. “Continue with Google” on those pages is refused inside the tile; the sign-in screen stays on the email form. A magic-link email that opens in another app can be pasted back, or the code from that email typed into the page.
 - **Cloudflare challenges** can appear on claude.ai / grok.com; solve them manually in the tile.
 - **Voice crosstalk:** with speaker output, an AI's open mic would hear the other AIs — hence the single-open-mic rule. Headphones remove the issue entirely.
 - **Memory:** four live WebViews plus the camera is heavy; mute/remove tiles you aren't using.

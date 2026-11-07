@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.aiconference.app.web.LoginUrls
 import com.aiconference.app.web.TileWebViewFactory
 import java.util.UUID
 
@@ -85,6 +86,47 @@ class TileManager(private val appContext: Context) : TileWebViewFactory.MicArbit
         val wv = webViews[tile.id] ?: return
         if (wv.canGoBack()) wv.goBack() else tile.service?.url?.let { wv.loadUrl(it) }
         tile.loginBlocked = false
+    }
+
+    /**
+     * Open the full-screen sign-in page. Stays on an email form the user
+     * already has on screen so typed text is kept. A Google error page is
+     * replaced with the service's email login.
+     */
+    fun beginSignIn(tile: Tile) {
+        val service = tile.service ?: return
+        tiles.forEach { it.signingIn = false }
+        tile.signingIn = true
+        tile.loginBlocked = false
+        if (tile.onLoginPage) tile.sawLoginDuringSignIn = true
+        val emailUrl = service.emailLoginUrl ?: return
+        val current = webViews[tile.id]?.url
+        val alreadyOnEmail = current != null &&
+            !LoginUrls.isBlocked(current) &&
+            LoginUrls.isLoginPage(service, current)
+        if (!alreadyOnEmail) {
+            webViewFor(tile).loadUrl(emailUrl)
+        } else {
+            webViews[tile.id]?.requestFocus()
+        }
+    }
+
+    fun finishSignIn(tile: Tile) {
+        tile.signingIn = false
+        tile.sawLoginDuringSignIn = false
+        tile.loginBlocked = false
+        TileWebViewFactory.flushCookies()
+    }
+
+    /** Open a copied magic link in this tile. Returns false when it isn't this service. */
+    fun pasteSignInLink(tile: Tile, clipboardText: String): Boolean {
+        val service = tile.service ?: return false
+        if (!LoginUrls.pasteAllowed(service, clipboardText)) return false
+        val url = LoginUrls.extractHttpsUrl(clipboardText) ?: return false
+        tile.signingIn = true
+        tile.sawLoginDuringSignIn = true
+        webViewFor(tile).loadUrl(url)
+        return true
     }
 
     /** Select which tile the user is talking to (null = mute everyone's mic). */
