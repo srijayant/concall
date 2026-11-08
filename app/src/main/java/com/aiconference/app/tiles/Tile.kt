@@ -28,5 +28,14 @@ class Tile(
     /** True when Google/Apple blocked sign-in inside the WebView. */
     var loginBlocked by mutableStateOf(false)
 
+    /** Current page is an email/password or magic-link login form. */
+    var onLoginPage by mutableStateOf(false)
+
+    /** Full-screen sign-in is open for this tile. */
+    var signingIn by mutableStateOf(false)
+
+    /** Sign-in screen has shown a login wall, so a later app page means success. */
+    var sawLoginDuringSignIn by mutableStateOf(false)
+
     val label: String get() = service?.label ?: "You"
 }

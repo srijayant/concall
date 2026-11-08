@@ -51,7 +51,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.aiconference.app.tiles.AiService
 import com.aiconference.app.tiles.Tile
@@ -63,6 +65,8 @@ class ConferenceActions(
     val popOutTile: (Tile) -> Unit,
     val bringBackTile: (Tile) -> Unit,
     val launchNativeApp: (AiService) -> Boolean,
+    val launchNativeNow: (AiService) -> Boolean,
+    val openInChrome: (String) -> Unit,
     val isNativeAppInstalled: (AiService) -> Boolean,
     val toggleSpeaker: () -> Boolean,
     val requestPermissions: () -> Unit,
@@ -76,6 +80,11 @@ fun ConferenceScreen(
     speakerOn: Boolean,
 ) {
     var showAddSheet by remember { mutableStateOf(false) }
+    val signingIn = manager.tiles.firstOrNull { it.signingIn && it.kind == TileKind.WEB }
+    if (signingIn != null) {
+        SignInScreen(tile = signingIn, manager = manager)
+        return
+    }
 
     Column(modifier = Modifier.fillMaxSize().background(Color(0xFF101014))) {
         HeaderBar(manager)
@@ -192,12 +201,24 @@ private fun TileCard(
                 if (tile.loginBlocked) {
                     LoginBlockedOverlay(
                         tile = tile,
-                        onBack = { manager.goBack(tile) },
-                        onNative = {
-                            tile.service?.let { actions.launchNativeApp(it) }
+                        onEmail = { manager.beginSignIn(tile) },
+                        onChrome = {
+                            tile.service?.let { actions.openInChrome(it.url) }
                         },
+                        onNative = { tile.service?.let { actions.launchNativeNow(it) } },
                         nativeAvailable = tile.service?.let { actions.isNativeAppInstalled(it) } == true,
                     )
+                } else if (tile.onLoginPage) {
+                    Button(
+                        onClick = { manager.beginSignIn(tile) },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 44.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = accent,
+                            contentColor = Color(0xFF101014),
+                        ),
+                    ) { Text("Sign in") }
                 }
             }
             else -> CameraTile(
@@ -281,10 +302,12 @@ private fun RowScope.TileAction(
 @Composable
 private fun LoginBlockedOverlay(
     tile: Tile,
-    onBack: () -> Unit,
+    onEmail: () -> Unit,
+    onChrome: () -> Unit,
     onNative: () -> Unit,
     nativeAvailable: Boolean,
 ) {
+    val email = tile.service?.emailLoginUrl != null
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -294,29 +317,105 @@ private fun LoginBlockedOverlay(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            "Google sign-in is blocked in tiles",
+            if (email) "Sign in with email" else "Sign in with Chrome",
             color = Color.White,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
         )
         Text(
-            "Google refuses “Sign in with Google” inside any in-app browser. Use email/password on the ${tile.label} page instead.",
+            if (email) "Use the email on your ${tile.label} account."
+            else "Your Google account is already in Chrome.",
             color = Color(0xFFC8C8D0),
             style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = 8.dp),
         )
         Button(
-            onClick = onBack,
+            onClick = if (email) onEmail else onChrome,
             modifier = Modifier.padding(top = 14.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A32)),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = tile.service?.accent ?: Color(0xFF2A2A32),
+                contentColor = Color(0xFF101014),
+            ),
         ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, null, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("Back to email login")
+            Text(if (email) "Continue" else "Open in Chrome")
         }
-        if (nativeAvailable) {
-            TextButton(onClick = onNative) {
-                Text("Open ${tile.label} app (separate)")
+        if (!email && nativeAvailable) {
+            TextButton(onClick = onNative) { Text("Open ${tile.label} app") }
+        }
+    }
+}
+
+@Composable
+private fun SignInScreen(
+    tile: Tile,
+    manager: TileManager,
+) {
+    val clipboard = LocalClipboardManager.current
+    var pasteNote by remember(tile.id) { mutableStateOf<String?>(null) }
+    val service = tile.service
+
+    Column(modifier = Modifier.fillMaxSize().background(Color(0xFF101014))) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = { manager.finishSignIn(tile) }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, "back", tint = Color.White)
+            }
+            Text(
+                "Sign in to ${tile.label}",
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { manager.finishSignIn(tile) }) {
+                Text("Done", color = service?.accent ?: Color.White)
+            }
+        }
+
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            WebTile(tile, manager)
+            if (tile.loginBlocked) {
+                Text(
+                    "Use the email field. Google’s button doesn’t work in the app.",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(12.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xF0101014))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
+        }
+
+        if (service?.emailLoginUrl != null) {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                TextButton(onClick = {
+                    val text = clipboard.getText()?.text.orEmpty()
+                    pasteNote = if (manager.pasteSignInLink(tile, text)) {
+                        null
+                    } else {
+                        "Copy the sign-in link from the email, then tap again."
+                    }
+                }) { Text("Paste sign-in link") }
+                Text(
+                    pasteNote ?: when (service) {
+                        AiService.CLAUDE -> "If the email shows a code, type it in the page."
+                        else -> "Your password manager can fill this in."
+                    },
+                    color = Color(0xFF9A9AA5),
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                )
             }
         }
     }
