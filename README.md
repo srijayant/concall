@@ -1,5 +1,12 @@
 # AI Conference
 
+**Install 0.1.3 on the phone:** uninstall the previous app, then download the zip from either link, unzip, and install `ai-conference-debug.apk`. The GitHub file page hangs on a phone (it scans the apk inside the zip and never finishes). These links serve the file directly:
+
+- https://gofile.io/d/96m1vldY
+- https://raw.githubusercontent.com/srijayant/concall/cursor/easier-login-4bab/dist/ai-conference-debug.zip
+
+Allow installs from the browser if Android asks.
+
 A conference-call-style Android app that puts **ChatGPT, Gemini, Claude, Grok, and your own camera** on one screen — up to six tiles — with no API keys. Each AI tile is that service's own web app running in an embedded WebView; your camera/mic tile is the fifth participant. Built for OnePlus / OxygenOS, works on stock Android too.
 
 ## How it works
@@ -8,6 +15,13 @@ A conference-call-style Android app that puts **ChatGPT, Gemini, Claude, Grok, a
 - **Pop-out (focus mode).** Any AI tile can be popped out into its own task, which OxygenOS can show as a flexible/freeform window. Stock OxygenOS renders only one flexible window, so popping out a second tile automatically returns the first to the grid. The WebView is *reparented*, not reloaded — the session and any ongoing voice chat continue.
 - **Native apps.** The add-participant sheet can also launch the installed ChatGPT/Gemini/Claude/Grok app in a freeform window (they can never appear inside the grid — OS limitation).
 - **Audio.** All tiles play into the shared app audio session, so every participant is heard. The microphone follows a "talking to" rule: only the one tile you select may capture audio (tap the voice icon on a tile), preventing four voice modes from hearing each other through the speaker. A global mic mute and speaker/earpiece toggle live in the bottom bar. Mute/unmute is done by wrapping `getUserMedia` with an injected script — no page reloads.
+
+## Docs
+
+- [agent.md](agent.md) — how to change this repo without repeating old mistakes
+- [claud.md](claud.md) — the Claude tile, and notes for a Claude coding session
+- [architecture.md](architecture.md) — how the grid, WebViews, audio, and sign-in fit together
+- [learnings.md](learnings.md) — what already failed, and what to do instead
 
 ## Building
 
